@@ -6,7 +6,13 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
 duckdb = { version = "1.0", features = ["bundled"] }
+# LanceDB for vector database backend option (commented out for now due to compilation issues)
+# lancedb = { version = "0.14.1", default-features = false, features = ["remote"] }
+# arrow-array = "53.0"
+# arrow-schema = "53.0"
 anyhow = "1.0"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 # FastEmbed with ONNX Runtime configured for Metal/CoreML acceleration  

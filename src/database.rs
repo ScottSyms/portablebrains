@@ -44,12 +44,25 @@ impl Database {
                 id VARCHAR PRIMARY KEY,
                 filename VARCHAR NOT NULL,
                 file_path VARCHAR NOT NULL,
-                pdf_data BLOB NOT NULL,
+                file_type VARCHAR NOT NULL,
+                file_data BLOB NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(file_path)
             )",
             [],
         ).context("Failed to create documents table")?;
+        
+        // Add file_type column if it doesn't exist (for existing databases)
+        let _ = self.conn.execute(
+            "ALTER TABLE documents ADD COLUMN file_type VARCHAR",
+            [],
+        );
+        
+        // Rename pdf_data column to file_data if needed (for existing databases)
+        let _ = self.conn.execute(
+            "ALTER TABLE documents RENAME COLUMN pdf_data TO file_data",
+            [],
+        );
         
         // Create fragments table
         self.conn.execute(
@@ -147,19 +160,24 @@ impl Database {
         Ok(count > 0)
     }
     
-    pub async fn store_document(&mut self, file_path: &Path, pdf_data: &[u8]) -> Result<String> {
+    pub async fn store_document(&mut self, file_path: &Path, file_data: &[u8]) -> Result<String> {
         let document_id = Uuid::new_v4().to_string();
         let filename = file_path.file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or("unknown.pdf");
+            .unwrap_or("unknown");
         let path_str = file_path.to_string_lossy();
         
+        // Determine file type from extension
+        let file_type = file_path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("unknown")
+            .to_lowercase();
+        
         self.conn.execute(
-            "INSERT INTO documents (id, filename, file_path, pdf_data) VALUES (?, ?, ?, ?)",
-            params![&document_id, filename, path_str.as_ref(), pdf_data],
+            "INSERT INTO documents (id, filename, file_path, file_type, file_data) VALUES (?, ?, ?, ?, ?)",
+            params![&document_id, filename, path_str.as_ref(), &file_type, file_data],
         ).context("Failed to store document")?;
         
-        info!("Stored document with ID: {}", document_id);
         Ok(document_id)
     }
     
