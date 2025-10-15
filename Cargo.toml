@@ -1,0 +1,25 @@
+[package]
+name = "portable-brains"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+duckdb = { version = "1.0", features = ["bundled"] }
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+# FastEmbed with ONNX Runtime configured for Metal/CoreML acceleration  
+fastembed = "5.2.0"
+# Enable CoreML execution provider for Apple Silicon acceleration
+ort = { version = "2.0.0-rc.10", features = ["coreml"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+lopdf = "0.32"
+regex = "1.0"
+log = "0.4"
+env_logger = "0.11"
+
+[[bin]]
+name = "portable-brains"
+path = "src/main.rs"
