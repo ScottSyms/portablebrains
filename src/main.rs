@@ -72,22 +72,33 @@ async fn main() -> Result<()> {
         5_000_000,  // max_text_length: 5M characters (reduced from 10M)
     );
     
-    // Phase 1: Process all PDF files and extract text (no embeddings yet)
-    let pdf_files = find_pdf_files(&args.input_dir)?;
-    info!("🎯 Found {} PDF files to process", pdf_files.len());
+    // Phase 1: Process all supported files and extract text (no embeddings yet)
+    let supported_files = find_supported_files(&args.input_dir)?;
+    info!("🎯 Found {} supported files to process", supported_files.len());
     
-    info!("🚀 Phase 1: Extracting text from PDFs...");
-    for (i, pdf_path) in pdf_files.iter().enumerate() {
-        info!("📝 Processing PDF {}/{}: {:?}", i + 1, pdf_files.len(), pdf_path);
+    if supported_files.is_empty() {
+        warn!("No supported files found in directory: {:?}", args.input_dir);
+        warn!("Supported formats: PDF, TXT, HTML, DOCX, PPTX, XLSX");
+        return Ok(());
+    }
+    
+    info!("🚀 Phase 1: Extracting text from documents...");
+    for (i, file_path) in supported_files.iter().enumerate() {
+        let extension = file_path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("unknown");
+        
+        info!("📝 Processing file {}/{}: {:?} ({})", 
+              i + 1, supported_files.len(), file_path, extension.to_uppercase());
         
         match process_document(
-            pdf_path,
+            file_path,
             &mut db,
             &document_processor,
         ).await {
-            Ok(_) => info!("✅ Successfully extracted text from: {:?}", pdf_path),
+            Ok(_) => info!("✅ Successfully extracted text from: {:?}", file_path),
             Err(e) => {
-                error!("❌ Failed to process {:?}: {}", pdf_path, e);
+                error!("❌ Failed to process {:?}: {}", file_path, e);
                 // Continue processing other files
             }
         }
@@ -132,8 +143,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn find_pdf_files(dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut pdf_files = Vec::new();
+fn find_supported_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut supported_files = Vec::new();
+    let supported_extensions = ["pdf", "txt", "text", "html", "htm", "docx", "pptx", "xlsx"];
     
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -141,48 +153,49 @@ fn find_pdf_files(dir: &Path) -> Result<Vec<PathBuf>> {
         
         if path.is_file() {
             if let Some(extension) = path.extension() {
-                if extension.to_string_lossy().to_lowercase() == "pdf" {
-                    pdf_files.push(path);
+                let ext_lower = extension.to_string_lossy().to_lowercase();
+                if supported_extensions.contains(&ext_lower.as_str()) {
+                    supported_files.push(path);
                 }
             }
         }
     }
     
-    Ok(pdf_files)
+    Ok(supported_files)
 }
 
 async fn process_document(
-    pdf_path: &Path,
+    file_path: &Path,
     db: &mut Database,
     processor: &DocumentProcessor,
 ) -> Result<()> {
     // Check if document already exists
-    if db.document_exists(pdf_path).await? {
-        warn!("Document already exists, skipping: {:?}", pdf_path);
+    if db.document_exists(file_path).await? {
+        warn!("Document already exists, skipping: {:?}", file_path);
         return Ok(());
     }
     
     // Check file size before loading
-    let file_size = std::fs::metadata(pdf_path)?.len();
-    info!("📄 Processing document: {:?} ({:.2} MB)", pdf_path, file_size as f64 / (1024.0 * 1024.0));
+    let file_size = std::fs::metadata(file_path)?.len();
+    info!("📄 Processing document: {:?} ({:.2} MB)", file_path, file_size as f64 / (1024.0 * 1024.0));
     
     if file_size > 100 * 1024 * 1024 {  // 100MB limit
-        warn!("⚠️  Skipping large file: {:?} ({:.2} MB)", pdf_path, file_size as f64 / (1024.0 * 1024.0));
+        warn!("⚠️  Skipping large file: {:?} ({:.2} MB)", file_path, file_size as f64 / (1024.0 * 1024.0));
         return Ok(());
     }
     
-    info!("📖 Reading PDF file...");
-    // Read and store the original PDF
-    let pdf_data = std::fs::read(pdf_path).context("Failed to read PDF file")?;
-    let document_id = db.store_document(pdf_path, &pdf_data).await?;
+    info!("📖 Reading file...");
+    // Read and store the original file
+    let file_data = std::fs::read(file_path).context("Failed to read file")?;
+    let document_id = db.store_document(file_path, &file_data).await?;
     
-    info!("🔍 Extracting text from PDF...");
-    // Extract text from PDF with memory limits
-    let text = processor.extract_text_from_pdf(&pdf_data)
-        .context("Failed to extract text from PDF")?;
+    info!("🔍 Extracting text from file...");
+    // Extract text from document with memory limits
+    let text = processor.extract_text_from_document(file_path, &file_data)
+        .context("Failed to extract text from file")?;
     
-    // Free the PDF data from memory as soon as possible
-    drop(pdf_data);
+    // Free the file data from memory as soon as possible
+    drop(file_data);
     
     info!("✂️  Splitting text into chunks...");
     // Split text into semantic chunks  
@@ -204,7 +217,7 @@ async fn process_document(
         }
     }
     
-    info!("✅ Stored all {} text fragments for document: {:?}", fragments.len(), pdf_path);
+    info!("✅ Stored all {} text fragments for document: {:?}", fragments.len(), file_path);
     Ok(())
 }
 

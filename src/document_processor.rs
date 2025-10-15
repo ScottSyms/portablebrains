@@ -2,7 +2,49 @@ use anyhow::{Context, Result};
 use lopdf::Document;
 use regex::Regex;
 use log::{debug, warn};
+use std::path::Path;
+use scraper::{Html, Selector};
+use calamine::{Reader, open_workbook_auto, DataType};
+use std::io::{Cursor, Read};
+use zip::ZipArchive;
+use quick_xml::Reader as XmlReader;
+use quick_xml::events::Event;
+use uuid::Uuid;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum DocumentFormat {
+    Pdf,
+    Text,
+    Html,
+    Docx,
+    Pptx,
+    Xlsx,
+}
+
+impl DocumentFormat {
+    pub fn from_extension(extension: &str) -> Option<Self> {
+        match extension.to_lowercase().as_str() {
+            "pdf" => Some(DocumentFormat::Pdf),
+            "txt" | "text" => Some(DocumentFormat::Text),
+            "html" | "htm" => Some(DocumentFormat::Html),
+            "docx" => Some(DocumentFormat::Docx),
+            "pptx" => Some(DocumentFormat::Pptx),
+            "xlsx" => Some(DocumentFormat::Xlsx),
+            _ => None,
+        }
+    }
+    
+    pub fn extensions(&self) -> &'static [&'static str] {
+        match self {
+            DocumentFormat::Pdf => &["pdf"],
+            DocumentFormat::Text => &["txt", "text"],
+            DocumentFormat::Html => &["html", "htm"],
+            DocumentFormat::Docx => &["docx"],
+            DocumentFormat::Pptx => &["pptx"],
+            DocumentFormat::Xlsx => &["xlsx"],
+        }
+    }
+}
 
 pub struct DocumentProcessor {
     chunk_size: usize,
@@ -103,6 +145,285 @@ impl DocumentProcessor {
         
         debug!("Extracted {} characters of text from {} pages", cleaned_text.len(), page_count);
         Ok(cleaned_text)
+    }
+
+    /// Extract text from any supported document format
+    pub fn extract_text_from_document(&self, file_path: &Path, file_data: &[u8]) -> Result<String> {
+        // Check file size limit
+        if file_data.len() > self.max_file_size {
+            anyhow::bail!(
+                "File too large: {} bytes (max: {} bytes)", 
+                file_data.len(), 
+                self.max_file_size
+            );
+        }
+
+        // Determine format from file extension
+        let extension = file_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("");
+            
+        let format = DocumentFormat::from_extension(extension)
+            .ok_or_else(|| anyhow::anyhow!("Unsupported file format: {}", extension))?;
+
+        let text = match format {
+            DocumentFormat::Pdf => self.extract_text_from_pdf(file_data)?,
+            DocumentFormat::Text => self.extract_text_from_text(file_data)?,
+            DocumentFormat::Html => self.extract_text_from_html(file_data)?,
+            DocumentFormat::Docx => self.extract_text_from_docx(file_data)?,
+            DocumentFormat::Pptx => self.extract_text_from_pptx(file_data)?,
+            DocumentFormat::Xlsx => self.extract_text_from_xlsx(file_data)?,
+        };
+
+        if text.trim().is_empty() {
+            anyhow::bail!("No text could be extracted from file: {:?}", file_path);
+        }
+
+        Ok(text)
+    }
+
+    /// Extract text from plain text files
+    fn extract_text_from_text(&self, file_data: &[u8]) -> Result<String> {
+        let text = String::from_utf8_lossy(file_data).to_string();
+        let cleaned_text = self.cleanup_text(&text);
+        
+        if cleaned_text.len() > self.max_text_length {
+            let truncated: String = cleaned_text.chars().take(self.max_text_length).collect();
+            warn!("Text file truncated to {} characters", self.max_text_length);
+            Ok(truncated)
+        } else {
+            Ok(cleaned_text)
+        }
+    }
+
+    /// Extract text from HTML files
+    fn extract_text_from_html(&self, file_data: &[u8]) -> Result<String> {
+        let html_content = String::from_utf8_lossy(file_data);
+        let document = Html::parse_document(&html_content);
+        
+        // Remove script and style elements
+        let script_selector = Selector::parse("script, style").unwrap();
+        let text_selector = Selector::parse("body").unwrap();
+        
+        let mut text_content = String::new();
+        
+        // Try to get body content first, fallback to full document
+        if let Some(body) = document.select(&text_selector).next() {
+            text_content = self.extract_text_from_html_element(&body, &script_selector);
+        } else {
+            // No body tag, extract from entire document
+            text_content = document.root_element().text().collect::<Vec<_>>().join(" ");
+        }
+        
+        let cleaned_text = self.cleanup_text(&text_content);
+        
+        if cleaned_text.len() > self.max_text_length {
+            let truncated: String = cleaned_text.chars().take(self.max_text_length).collect();
+            warn!("HTML file truncated to {} characters", self.max_text_length);
+            Ok(truncated)
+        } else {
+            Ok(cleaned_text)
+        }
+    }
+
+    /// Helper method to extract text from HTML elements while skipping scripts/styles
+    fn extract_text_from_html_element(&self, element: &scraper::ElementRef, _script_selector: &Selector) -> String {
+        // Simply extract all text content from the element
+        element.text().collect::<Vec<_>>().join(" ")
+    }
+
+    /// Extract text from DOCX files
+    fn extract_text_from_docx(&self, file_data: &[u8]) -> Result<String> {
+        let cursor = Cursor::new(file_data);
+        let mut archive = ZipArchive::new(cursor)
+            .context("Failed to open DOCX file as ZIP archive")?;
+        
+        // Extract document.xml which contains the main content
+        let mut document_xml = archive.by_name("word/document.xml")
+            .context("Failed to find document.xml in DOCX file")?;
+        
+        let mut xml_content = String::new();
+        document_xml.read_to_string(&mut xml_content)
+            .context("Failed to read document.xml content")?;
+        
+        let text = self.extract_text_from_docx_xml(&xml_content)?;
+        let cleaned_text = self.cleanup_text(&text);
+        
+        if cleaned_text.len() > self.max_text_length {
+            let truncated: String = cleaned_text.chars().take(self.max_text_length).collect();
+            warn!("DOCX file truncated to {} characters", self.max_text_length);
+            Ok(truncated)
+        } else {
+            Ok(cleaned_text)
+        }
+    }
+
+    /// Extract text from PowerPoint PPTX files
+    fn extract_text_from_pptx(&self, file_data: &[u8]) -> Result<String> {
+        let cursor = Cursor::new(file_data);
+        let mut archive = ZipArchive::new(cursor)
+            .context("Failed to open PPTX file as ZIP archive")?;
+        
+        let mut all_text = String::new();
+        
+        // Extract text from all slides
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i)?;
+            let file_name = file.name().to_string();
+            
+            // Look for slide XML files
+            if file_name.starts_with("ppt/slides/slide") && file_name.ends_with(".xml") {
+                let mut xml_content = String::new();
+                file.read_to_string(&mut xml_content)
+                    .context("Failed to read slide XML content")?;
+                
+                let slide_text = self.extract_text_from_pptx_xml(&xml_content)?;
+                if !slide_text.is_empty() {
+                    all_text.push_str(&slide_text);
+                    all_text.push('\n');
+                }
+            }
+        }
+        
+        let cleaned_text = self.cleanup_text(&all_text);
+        
+        if cleaned_text.len() > self.max_text_length {
+            let truncated: String = cleaned_text.chars().take(self.max_text_length).collect();
+            warn!("PPTX file truncated to {} characters", self.max_text_length);
+            Ok(truncated)
+        } else {
+            Ok(cleaned_text)
+        }
+    }
+
+    /// Extract text from Excel XLSX files
+    fn extract_text_from_xlsx(&self, file_data: &[u8]) -> Result<String> {
+        // Create a temporary file for calamine to read
+        let temp_path = std::env::temp_dir().join(format!("temp_excel_{}.xlsx", Uuid::new_v4()));
+        std::fs::write(&temp_path, file_data)?;
+        
+        let result = (|| -> Result<String> {
+            let mut workbook = open_workbook_auto(&temp_path)
+                .context("Failed to open XLSX file")?;
+            
+            let mut all_text = String::new();
+            
+            // Process all worksheets
+            for sheet_name in workbook.sheet_names().to_vec() {
+                if let Some(Ok(range)) = workbook.worksheet_range(&sheet_name) {
+                    // Extract text from all cells
+                    for row in range.rows() {
+                        let mut row_text = Vec::new();
+                        for cell in row {
+                            match cell {
+                                DataType::String(s) => row_text.push(s.clone()),
+                                DataType::Float(f) => row_text.push(f.to_string()),
+                                DataType::Int(i) => row_text.push(i.to_string()),
+                                DataType::Bool(b) => row_text.push(b.to_string()),
+                                DataType::DateTime(dt) => row_text.push(dt.to_string()),
+                                DataType::Duration(d) => row_text.push(d.to_string()),
+                                DataType::DateTimeIso(dt) => row_text.push(dt.clone()),
+                                DataType::DurationIso(d) => row_text.push(d.clone()),
+                                DataType::Error(_) | DataType::Empty => {} // Skip errors and empty cells
+                            }
+                        }
+                        
+                        if !row_text.is_empty() {
+                            all_text.push_str(&row_text.join(" | "));
+                            all_text.push('\n');
+                        }
+                    }
+                    
+                    // Add sheet separator
+                    all_text.push_str(&format!("\n--- End of sheet: {} ---\n", sheet_name));
+                }
+            }
+            
+            Ok(all_text)
+        })();
+        
+        // Clean up temp file
+        let _ = std::fs::remove_file(&temp_path);
+        
+        let all_text = result?;
+        let cleaned_text = self.cleanup_text(&all_text);
+        
+        if cleaned_text.len() > self.max_text_length {
+            let truncated: String = cleaned_text.chars().take(self.max_text_length).collect();
+            warn!("XLSX file truncated to {} characters", self.max_text_length);
+            Ok(truncated)
+        } else {
+            Ok(cleaned_text)
+        }
+    }
+
+    /// Extract text from DOCX XML content
+    fn extract_text_from_docx_xml(&self, xml_content: &str) -> Result<String> {
+        let mut reader = XmlReader::from_str(xml_content);
+        let mut text_content = String::new();
+        let mut buf = Vec::new();
+        
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Text(e)) => {
+                    if let Ok(text) = e.unescape() {
+                        text_content.push_str(&text);
+                        text_content.push(' ');
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    warn!("Error parsing DOCX XML: {}", e);
+                    break;
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+        
+        Ok(text_content)
+    }
+
+    /// Extract text from PPTX XML content
+    fn extract_text_from_pptx_xml(&self, xml_content: &str) -> Result<String> {
+        let mut reader = XmlReader::from_str(xml_content);
+        let mut text_content = String::new();
+        let mut buf = Vec::new();
+        let mut in_text_element = false;
+        
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => {
+                    // Look for text elements in PowerPoint XML
+                    if e.name().as_ref() == b"a:t" {
+                        in_text_element = true;
+                    }
+                }
+                Ok(Event::End(e)) => {
+                    if e.name().as_ref() == b"a:t" {
+                        in_text_element = false;
+                        text_content.push(' ');
+                    }
+                }
+                Ok(Event::Text(e)) => {
+                    if in_text_element {
+                        if let Ok(text) = e.unescape() {
+                            text_content.push_str(&text);
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    warn!("Error parsing PPTX XML: {}", e);
+                    break;
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+        
+        Ok(text_content)
     }
     
     /// Chunk text with memory-efficient processing
