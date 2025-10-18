@@ -283,19 +283,23 @@ impl Storage for DuckDBStorage {
         query_embedding: &[f64],
         limit: usize,
     ) -> Result<Vec<(String, String, f64)>> {
-        // Convert query embedding to JSON for DuckDB
-        let query_json = serde_json::to_string(query_embedding)
-            .context("Failed to serialize query embedding")?;
+        // Convert query embedding to DuckDB list format  
+        let query_list: String = format!("[{}]", 
+            query_embedding.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, content, array_cosine_similarity(embedding, CAST(? AS DOUBLE[])) AS similarity 
+            "SELECT id, content, list_cosine_similarity(embedding, ?::DOUBLE[]) AS similarity 
              FROM fragments 
              WHERE embedding IS NOT NULL 
              ORDER BY similarity DESC 
              LIMIT {}", limit
         ))?;
         
-        let rows = stmt.query_map(params![query_json], |row| {
+        let rows = stmt.query_map(params![query_list], |row| {
             Ok((
                 row.get::<_, String>(0)?,  // id
                 row.get::<_, String>(1)?,  // content

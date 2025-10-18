@@ -31,7 +31,13 @@ scraper = "0.19"    # HTML element extraction
 zip = "0.6"         # For Office document formats (docx, pptx, xlsx)
 quick-xml = "0.31"  # XML parsing for Office formats
 calamine = "0.22"   # Excel file reading
+reqwest = { version = "0.11", features = ["json"] }  # HTTP client for LLM API calls
+console = "0.15"   # Better terminal input/output
 
 [[bin]]
 name = "portable-brains"
 path = "src/main.rs"
+
+[[bin]]
+name = "eatmybrain"
+path = "src/eatmybrain.rs"
