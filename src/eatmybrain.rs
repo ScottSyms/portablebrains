@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use console::{style, Term};
 use std::path::PathBuf;
 use std::io::{self, Write};
@@ -14,6 +14,48 @@ use duckdb_storage::DuckDBStorage;
 use embedding_manager::EmbeddingManager;
 use storage::Storage;
 
+#[derive(Clone, ValueEnum)]
+enum AIModel {
+    /// OpenAI GPT-4 (most capable, slower, expensive)
+    Gpt4,
+    /// OpenAI GPT-4 Turbo (faster than GPT-4, good balance)
+    Gpt4Turbo,
+    /// OpenAI GPT-3.5 Turbo (fast, cost-effective)
+    Gpt35Turbo,
+    /// Anthropic Claude 3 Opus (very capable, good for complex tasks)
+    Claude3Opus,
+    /// Anthropic Claude 3 Sonnet (balanced performance)
+    Claude3Sonnet,
+    /// Anthropic Claude 3 Haiku (fast, cost-effective)
+    Claude3Haiku,
+    /// Use custom model name (specify with --model)
+    Custom,
+}
+
+impl AIModel {
+    fn model_name(&self) -> &'static str {
+        match self {
+            AIModel::Gpt4 => "gpt-4",
+            AIModel::Gpt4Turbo => "gpt-4-turbo",
+            AIModel::Gpt35Turbo => "gpt-3.5-turbo",
+            AIModel::Claude3Opus => "claude-3-opus-20240229",
+            AIModel::Claude3Sonnet => "claude-3-sonnet-20240229",
+            AIModel::Claude3Haiku => "claude-3-haiku-20240307",
+            AIModel::Custom => "", // Will use the --model parameter
+        }
+    }
+
+    fn suggested_endpoint(&self) -> &'static str {
+        match self {
+            AIModel::Gpt4 | AIModel::Gpt4Turbo | AIModel::Gpt35Turbo => 
+                "https://api.openai.com/v1/chat/completions",
+            AIModel::Claude3Opus | AIModel::Claude3Sonnet | AIModel::Claude3Haiku => 
+                "https://api.anthropic.com/v1/messages",
+            AIModel::Custom => "", // User must specify
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "eatmybrain")]
 #[command(about = "Conversational RAG using Portable Brains vector database")]
@@ -22,15 +64,19 @@ struct Args {
     #[arg(short, long)]
     database: PathBuf,
     
-    /// LLM API endpoint URL
+    /// LLM API endpoint URL (auto-detected for known AI models if not specified)
     #[arg(short, long)]
-    endpoint: String,
+    endpoint: Option<String>,
     
     /// API key for the LLM service
     #[arg(short, long)]
     api_key: String,
+
+    /// Select from popular AI models (auto-configures endpoint and model name)
+    #[arg(long, value_enum)]
+    ai_model: Option<AIModel>,
     
-    /// Model name to use for the LLM
+    /// Custom model name (used when --ai-model=custom or no --ai-model specified)
     #[arg(short, long, default_value = "gpt-4")]
     model: String,
     
@@ -39,7 +85,9 @@ struct Args {
     results: usize,
     
     /// Embedding model name (must match what was used for indexing)
-    #[arg(long, default_value = "BAAI/bge-small-en-v1.5")]
+    /// Popular options: BAAI/bge-small-en-v1.5, sentence-transformers/all-MiniLM-L6-v2, 
+    /// sentence-transformers/all-mpnet-base-v2, nomic-ai/nomic-embed-text-v1
+    #[arg(short = 'E', long, default_value = "BAAI/bge-small-en-v1.5")]
     embedding_model: String,
     
     /// Enable verbose logging
@@ -84,6 +132,37 @@ struct RagEngine {
 
 impl RagEngine {
     async fn new(args: Args) -> Result<Self> {
+        // Process AI model selection and auto-configure endpoint/model
+        let (final_endpoint, final_model) = match &args.ai_model {
+            Some(ai_model) => {
+                let suggested_endpoint = ai_model.suggested_endpoint();
+                let model_name = ai_model.model_name();
+                
+                // Use suggested endpoint if no endpoint provided
+                let endpoint = args.endpoint.clone().unwrap_or_else(|| {
+                    if suggested_endpoint.is_empty() {
+                        panic!("Custom AI model requires --endpoint to be specified");
+                    }
+                    suggested_endpoint.to_string()
+                });
+                
+                // Use model from AI selection unless it's custom
+                let model = if matches!(ai_model, AIModel::Custom) {
+                    args.model.clone()
+                } else {
+                    model_name.to_string()
+                };
+                
+                (endpoint, model)
+            }
+            None => {
+                // No AI model specified, require endpoint and use provided model
+                let endpoint = args.endpoint.clone()
+                    .ok_or_else(|| anyhow::anyhow!("--endpoint is required when not using --ai-model"))?;
+                (endpoint, args.model.clone())
+            }
+        };
+
         // Validate database exists
         if !args.database.exists() {
             anyhow::bail!("Database file does not exist: {}", args.database.display());
@@ -112,9 +191,9 @@ impl RagEngine {
             storage,
             embedding_manager,
             llm_client,
-            endpoint: args.endpoint,
+            endpoint: final_endpoint,
             api_key: args.api_key,
-            model: args.model,
+            model: final_model,
             max_results,
             verbose: args.verbose,
         })
@@ -308,12 +387,12 @@ async fn main() -> Result<()> {
     // Initialize RAG engine
     println!("🚀 Initializing EatMyBrain RAG engine...");
     println!("📊 Database: {}", args.database.display());
-    println!("🌐 LLM Endpoint: {}", args.endpoint);
-    println!("🤖 Model: {}", args.model);
 
     let mut rag_engine = RagEngine::new(args).await
         .context("Failed to initialize RAG engine")?;
 
+    println!("🌐 LLM Endpoint: {}", rag_engine.endpoint);
+    println!("🤖 Model: {}", rag_engine.model);
     println!("✅ Ready!");
     println!();
 

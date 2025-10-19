@@ -12,7 +12,22 @@ EatMyBrain is a conversational RAG (Retrieval-Augmented Generation) application 
 
 ## Usage
 
-### Basic Usage
+### Basic Usage with AI Model Selection
+```bash
+# Quick start with popular AI models (auto-configures endpoints)
+cargo run --bin eatmybrain -- \
+  --database my_documents.db \
+  --api-key sk-your-api-key \
+  --ai-model gpt4
+
+# Or use Claude
+cargo run --bin eatmybrain -- \
+  --database my_documents.db \
+  --api-key your-anthropic-key \
+  --ai-model claude3-sonnet
+```
+
+### Advanced Usage with Custom Configuration
 ```bash
 cargo run --bin eatmybrain -- \
   --database my_documents.db \
@@ -25,11 +40,19 @@ cargo run --bin eatmybrain -- \
 ### Command Line Options
 
 - `--database`: Path to DuckDB file created by portable-brains
-- `--endpoint`: LLM API endpoint URL (OpenAI-compatible)
+- `--ai-model`: Select from popular AI models (auto-configures endpoint and model)
+  - `gpt4`: OpenAI GPT-4 (most capable, slower, expensive)  
+  - `gpt4-turbo`: OpenAI GPT-4 Turbo (faster than GPT-4, good balance)
+  - `gpt35-turbo`: OpenAI GPT-3.5 Turbo (fast, cost-effective)
+  - `claude3-opus`: Anthropic Claude 3 Opus (very capable, good for complex tasks)
+  - `claude3-sonnet`: Anthropic Claude 3 Sonnet (balanced performance)
+  - `claude3-haiku`: Anthropic Claude 3 Haiku (fast, cost-effective)
+  - `custom`: Use custom model name (specify with --model)
+- `--endpoint`: LLM API endpoint URL (auto-detected for known AI models)
 - `--api-key`: Your API key for the LLM service
-- `--model`: Model to use (default: gpt-4)
-- `--results`: Number of similar documents to retrieve (1-20, default: 5)
-- `--embedding-model`: Must match the model used during indexing (default: BAAI/bge-small-en-v1.5)
+- `--model`: Custom model name (used with --ai-model=custom or when no --ai-model specified)
+- `--results`: Number of similar documents to retrieve (1-20, default: 5)  
+- `--embedding-model` (`-E`): Must match the model used during indexing (default: BAAI/bge-small-en-v1.5)
 - `--verbose`: Enable debug logging
 
 ### Interactive Commands
@@ -63,34 +86,45 @@ Based on the documentation, the main features include:
 
 ## Supported LLM Providers
 
-EatMyBrain works with any OpenAI-compatible API, including:
+### Quick Setup with AI Model Selection
 
-### OpenAI
 ```bash
+# OpenAI models (easiest)
+--ai-model gpt4 --api-key sk-your-openai-key
+--ai-model gpt4-turbo --api-key sk-your-openai-key  
+--ai-model gpt35-turbo --api-key sk-your-openai-key
+
+# Anthropic Claude models
+--ai-model claude3-opus --api-key your-anthropic-key
+--ai-model claude3-sonnet --api-key your-anthropic-key
+--ai-model claude3-haiku --api-key your-anthropic-key
+
+# Local models (Ollama, LM Studio, etc.)
+--ai-model custom \
+--model llama2 \
+--endpoint http://localhost:11434/v1/chat/completions \
+--api-key dummy-key
+```
+
+### Manual Configuration (Advanced)
+
+EatMyBrain works with any OpenAI-compatible API:
+
+```bash
+# OpenAI
 --endpoint https://api.openai.com/v1/chat/completions
 --api-key sk-your-openai-key
 --model gpt-4
-```
 
-### Anthropic Claude (via compatible proxy)
-```bash
---endpoint https://your-proxy.com/v1/chat/completions
---api-key your-anthropic-key
---model claude-3-sonnet
-```
-
-### Local models (via Ollama, LM Studio, etc.)
-```bash
---endpoint http://localhost:11434/v1/chat/completions
---api-key dummy-key
---model llama2
-```
-
-### Azure OpenAI
-```bash
+# Azure OpenAI  
 --endpoint https://your-resource.openai.azure.com/openai/deployments/your-deployment/chat/completions?api-version=2023-05-15
 --api-key your-azure-key
 --model gpt-4
+
+# Local models
+--endpoint http://localhost:11434/v1/chat/completions
+--api-key dummy-key
+--model llama2
 ```
 
 ## Prerequisites

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Parser, ValueEnum};
 // use log::{info, warn};
 use std::path::{Path, PathBuf};
@@ -24,6 +24,12 @@ enum Backend {
     Lancedb,
 }
 
+#[derive(Clone, ValueEnum)]
+enum EmbeddingProvider {
+    Local,
+    Remote,
+}
+
 #[derive(Parser)]
 #[command(name = "portable-brains")]
 #[command(about = "Portable Brains - Index documents with configurable storage backend")]
@@ -43,6 +49,18 @@ struct Args {
     /// Storage backend to use
     #[arg(short, long, value_enum, default_value = "duckdb")]
     backend: Backend,
+    
+    /// Embedding provider to use
+    #[arg(short = 'p', long, value_enum, default_value = "local")]
+    embedding_provider: EmbeddingProvider,
+    
+    /// API key for remote embedding providers (required for remote)
+    #[arg(long)]
+    api_key: Option<String>,
+    
+    /// Endpoint URL for remote embedding service (defaults to OpenAI if not specified)
+    #[arg(long)]
+    endpoint: Option<String>,
     
     /// Enable verbose logging
     #[arg(short, long)]
@@ -101,9 +119,20 @@ async fn main() -> Result<()> {
     storage.verify_or_set_model(&args.model).await
         .context("Failed to verify embedding model")?;
     
-    // Initialize embedding manager
-    let mut embedding_manager = EmbeddingManager::new(&args.model).await
-        .context("Failed to initialize embedding manager")?;
+    // Initialize embedding manager based on provider
+    let mut embedding_manager = match args.embedding_provider {
+        EmbeddingProvider::Local => {
+            EmbeddingManager::new(&args.model).await
+                .context("Failed to initialize local embedding manager")?
+        },
+        EmbeddingProvider::Remote => {
+            let api_key = args.api_key
+                .ok_or_else(|| anyhow::anyhow!("API key is required for remote embedding provider"))?;
+            
+            EmbeddingManager::new_remote(api_key, &args.model, args.endpoint).await
+                .context("Failed to initialize remote embedding manager")?
+        },
+    };
     
     // Initialize document processor with memory-efficient sentence-based chunking
     let document_processor = DocumentProcessor::with_limits(
