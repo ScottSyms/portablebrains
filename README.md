@@ -6,7 +6,7 @@ A Rust-based document indexing system that converts multiple document formats (P
 
 ```
 cargo build --release --bin eatmybrain
-``
+```
 
 Apologies to the *Odds*.
 
