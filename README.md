@@ -1,6 +1,6 @@
 # Portable Brains
 
-A Rust-based document indexing system that converts multiple document formats (PDF, TXT, HTML, DOCX, PPTX, XLSX) into a searchable archive optimized for generative AI querying. The system extracts text from documents, performs semantic chunking, generates embeddings, and stores everything in a structured database format with configurable storage backends.
+A vibe-coded, Rust-based document indexing system that converts multiple document formats (PDF, TXT, HTML, DOCX, PPTX, XLSX) into a searchable archive optimized for generative AI querying. The system extracts text from documents, performs semantic chunking, generates embeddings, and stores everything in a structured database format with configurable storage backends.
 
 [eatmybrain](EATMYBRAIN.md) is a console application that allows you to query the database. It can be separately compiled with
 
