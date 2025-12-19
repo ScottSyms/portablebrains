@@ -9,10 +9,12 @@ use log;
 mod duckdb_storage;
 mod embedding_manager;
 mod storage;
+mod mcp_server;
 
 use duckdb_storage::DuckDBStorage;
 use embedding_manager::EmbeddingManager;
 use storage::Storage;
+use mcp_server::{McpServer, run_http_server};
 
 #[derive(Clone, ValueEnum)]
 enum AIModel {
@@ -89,6 +91,14 @@ struct Args {
     /// sentence-transformers/all-mpnet-base-v2, nomic-ai/nomic-embed-text-v1
     #[arg(short = 'E', long, default_value = "BAAI/bge-small-en-v1.5")]
     embedding_model: String,
+    
+    /// Run as Model Context Protocol (MCP) server on stdio
+    #[arg(long)]
+    mcp: bool,
+    
+    /// Run as MCP HTTP server on the specified host:port (e.g., 127.0.0.1:3000)
+    #[arg(long)]
+    http: Option<String>,
     
     /// Enable verbose logging
     #[arg(short, long)]
@@ -197,6 +207,45 @@ impl RagEngine {
             max_results,
             verbose: args.verbose,
         })
+    }
+
+    /// Public method for querying the knowledge base with RAG
+    /// Returns the LLM-generated response based on retrieved documents
+    pub async fn query(&mut self, query: &str, max_results: usize) -> Result<String> {
+        // Temporarily override max_results if different
+        let original_max = self.max_results;
+        self.max_results = max_results;
+        
+        let context = self.search_similar_content(query).await?;
+        let response = self.generate_response(query, &context).await?;
+        
+        // Restore original max_results
+        self.max_results = original_max;
+        
+        Ok(response)
+    }
+
+    /// Public method for searching similar documents without LLM generation
+    /// Returns raw text snippets with similarity scores
+    pub async fn search_similar(&mut self, query: &str, max_results: usize) -> Result<Vec<(String, f64)>> {
+        // Generate embedding for the query
+        let query_embedding = self.embedding_manager.generate_embeddings_batch(&[query.to_string()]).await
+            .context("Failed to generate query embedding")?;
+
+        if query_embedding.is_empty() {
+            anyhow::bail!("Failed to generate embedding for query");
+        }
+
+        // Search for similar content in the database
+        let results = self.storage.search_similar(&query_embedding[0], max_results).await
+            .context("Failed to search similar content")?;
+
+        // Return content with similarity scores (ignore fragment_id)
+        let content_with_scores: Vec<(String, f64)> = results.into_iter()
+            .map(|(_, content, similarity)| (content, similarity))
+            .collect();
+
+        Ok(content_with_scores)
     }
 
     async fn search_similar_content(&mut self, query: &str) -> Result<Vec<String>> {
@@ -367,13 +416,20 @@ async fn main() -> Result<()> {
 
     // Initialize logging
     let log_level = if args.verbose { "debug" } else { "info" };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level))
+    let mut builder = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level));
+    builder
         .filter_module("duckdb", log::LevelFilter::Warn)
         .filter_module("ort", log::LevelFilter::Warn)
         .filter_module("reqwest", log::LevelFilter::Warn)
         .format_target(false)
-        .format_timestamp(None)
-        .init();
+        .format_timestamp(None);
+    
+    // In MCP mode, write logs to stderr to avoid interfering with JSON-RPC on stdout
+    if args.mcp {
+        builder.target(env_logger::Target::Stderr);
+    }
+    
+    builder.init();
 
     // Validate arguments
     if args.results == 0 {
@@ -383,21 +439,61 @@ async fn main() -> Result<()> {
     if args.results > 20 {
         anyhow::bail!("Results count cannot exceed 20");
     }
+    
+    // Check if both MCP modes are enabled
+    if args.mcp && args.http.is_some() {
+        anyhow::bail!("Cannot use both --mcp (stdio) and --http modes simultaneously");
+    }
+    
+    // Clone http binding address before consuming args
+    let http_bind_addr = args.http.clone();
 
-    // Initialize RAG engine
-    println!("🚀 Initializing EatMyBrain RAG engine...");
-    println!("📊 Database: {}", args.database.display());
+    // Check if running in MCP stdio mode
+    if args.mcp {
+        // Initialize RAG engine for MCP
+        log::info!("Initializing EatMyBrain as MCP server (stdio)");
+        log::info!("Database: {}", args.database.display());
 
-    let mut rag_engine = RagEngine::new(args).await
-        .context("Failed to initialize RAG engine")?;
+        let rag_engine = RagEngine::new(args).await
+            .context("Failed to initialize RAG engine")?;
 
-    println!("🌐 LLM Endpoint: {}", rag_engine.endpoint);
-    println!("🤖 Model: {}", rag_engine.model);
-    println!("✅ Ready!");
-    println!();
+        log::info!("LLM Endpoint: {}", rag_engine.endpoint);
+        log::info!("Model: {}", rag_engine.model);
+        log::info!("MCP server ready on stdio");
 
-    // Start the chat loop
-    rag_engine.chat_loop().await?;
+        // Start MCP server on stdio
+        let mut mcp_server = McpServer::new(rag_engine);
+        mcp_server.run().await?;
+    } else if let Some(bind_addr) = http_bind_addr {
+        // HTTP MCP server mode
+        log::info!("Initializing EatMyBrain as MCP HTTP server");
+        log::info!("Database: {}", args.database.display());
+        log::info!("Binding to: {}", bind_addr);
+
+        let rag_engine = RagEngine::new(args).await
+            .context("Failed to initialize RAG engine")?;
+
+        log::info!("LLM Endpoint: {}", rag_engine.endpoint);
+        log::info!("Model: {}", rag_engine.model);
+        
+        // Start HTTP server
+        run_http_server(rag_engine, bind_addr).await?;
+    } else {
+        // Standard interactive mode
+        println!("🚀 Initializing EatMyBrain RAG engine...");
+        println!("📊 Database: {}", args.database.display());
+
+        let mut rag_engine = RagEngine::new(args).await
+            .context("Failed to initialize RAG engine")?;
+
+        println!("🌐 LLM Endpoint: {}", rag_engine.endpoint);
+        println!("🤖 Model: {}", rag_engine.model);
+        println!("✅ Ready!");
+        println!();
+
+        // Start the chat loop
+        rag_engine.chat_loop().await?;
+    }
 
     Ok(())
 }

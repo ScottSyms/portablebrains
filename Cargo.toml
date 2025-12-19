@@ -33,6 +33,11 @@ quick-xml = "0.31"  # XML parsing for Office formats
 calamine = "0.22"   # Excel file reading
 reqwest = { version = "0.11", features = ["json"] }  # HTTP client for LLM API calls
 console = "0.15"   # Better terminal input/output
+async-stream = "0.3"  # MCP support
+parking_lot = "0.12"  # Blocking mutex for HTTP server
+axum = "0.7"  # HTTP server for MCP over HTTP
+tower = "0.4"  # Middleware for HTTP server
+tower-http = { version = "0.5", features = ["cors", "trace"] }  # HTTP utilities
 
 [[bin]]
 name = "portable-brains"

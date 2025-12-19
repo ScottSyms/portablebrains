@@ -2,9 +2,20 @@
 
 A vibe-coded, Rust-based document indexing system that converts multiple document formats (PDF, TXT, HTML, DOCX, PPTX, XLSX) into a searchable archive optimized for generative AI querying. The system extracts text from documents, performs semantic chunking, generates embeddings, and stores everything in a structured database format with configurable storage backends.
 
-[eatmybrain](EATMYBRAIN.md) is a console application that allows you to query the database. It can be separately compiled with
+## Binaries
 
-```
+### portable-brains
+The main indexing tool that processes documents and builds the knowledge base.
+
+### eatmybrain  
+A conversational RAG (Retrieval Augmented Generation) interface with two modes:
+- **Interactive Mode**: Command-line chat interface for querying your knowledge base
+- **MCP Server Mode**: Run as a Model Context Protocol server for integration with Claude Desktop, VSCode, or other MCP-compatible AI assistants
+
+See [EATMYBRAIN.md](EATMYBRAIN.md) for interactive mode details and [MCP_INTEGRATION.md](MCP_INTEGRATION.md) for MCP server configuration.
+
+Build separately with:
+```bash
 cargo build --release --bin eatmybrain
 ```
 
